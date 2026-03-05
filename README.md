@@ -1,129 +1,184 @@
 # Custom Cluster Autoscaler for GKE
 
-A simple way to deploy and manage a custom cluster autoscaler on Google Kubernetes Engine (GKE) with full control over autoscaling behavior.
+Deploy a custom cluster autoscaler on GKE with full control over scaling behavior.
 
-## Why This Exists
+## Why
 
-GKE's built-in autoscaler works great, but it's **managed by Google** and you **cannot change its behavior**. You can't:
+GKE's managed autoscaler is locked down by Google. You can't change scale-up delays, scan intervals, or use advanced flags. This gives you full control.
 
-- ❌ Set a delay before scaling up (e.g., wait 10 minutes to see if pods schedule)
-- ❌ Change scan intervals or thresholds
-- ❌ Customize scale-down behavior
-- ❌ Use advanced autoscaler features
-
-**This solution lets you:**
-
-- ✅ Deploy your own cluster autoscaler with full control
-- ✅ Set custom flags like `--new-pod-scale-up-delay=600s` (wait 10 minutes before adding nodes)
-- ✅ Manage multiple node pools with different configurations
-- ✅ Use taints and labels for workload isolation
-- ✅ Scale node pools to 0 when not in use (save money!)
-
-## What You Get
-
-Two bash scripts that handle everything:
-
-1. **`deploy-custom-ca.sh`** - Deploys the custom cluster autoscaler (Please Read It befoer using)
-2. **`add-nodepool.sh`** - Adds new node pools to the autoscaler
+**Key benefit:** Set `--new-pod-scale-up-delay=600s` to wait 10 minutes before scaling up (impossible with GKE's autoscaler).
 
 ## Prerequisites
 
-- A GKE cluster (Standard, not Autopilot)
-- `gcloud` CLI installed and authenticated
-- `kubectl` configured to access your cluster
-- `helm` 3.x installed
-- Basic knowledge of Kubernetes concepts
+- GKE cluster (Standard, not Autopilot)
+- `gcloud`, `kubectl`, `helm` installed
+- Workload Identity enabled on cluster
 
 ## Quick Start
-
-### Step 1: Deploy Custom Cluster Autoscaler
 
 ```bash
 chmod +x deploy-custom-ca.sh
 ./deploy-custom-ca.sh
 ```
 
-**You'll be asked for:**
-- Cluster name
-- Region/zone
-- Scale-up delay (default: 600 seconds = 10 minutes)
+**Prompts:**
+- Cluster name, region
+- Scale-up delay (default: 600s)
 - Min/max nodes
+- Target specific node pools or all pools
 
-**The script will:**
-1. ✅ Verify Workload Identity is enabled
-2. ✅ Disable GKE's managed autoscaler
-3. ✅ Create GCP service account with permissions
-4. ✅ Deploy custom cluster autoscaler via Helm
-5. ✅ Configure Workload Identity bindings
-6. ✅ Verify everything works
+**What it does:**
+1. Disables GKE's managed autoscaler (selected pools only)
+2. Creates GCP service account with compute.instanceAdmin.v1
+3. Deploys custom autoscaler via Helm (default namespace)
+4. Configures Workload Identity bindings
+5. Verifies deployment
 
-**Expected time:** 5-10 minutes
+**Time:** 5-10 minutes
 
-### Step 2: Add Custom Node Pools (Optional)
-
-Want a separate node pool for specific workloads? (e.g., batch jobs, test environments)
+## Example Run
 
 ```bash
-chmod +x add-nodepool.sh
-./add-nodepool.sh
-```
+$ ./deploy-custom-ca.sh
 
-**This creates:**
-- A node pool with custom labels and taints
-- Can scale to 0 nodes (no cost when idle!)
-- Managed by your custom autoscaler
+========================================
+STEP 0: Checking Prerequisites
+========================================
+[SUCCESS] ✓ gcloud installed
+[SUCCESS] ✓ kubectl installed
+[SUCCESS] ✓ helm installed
+
+========================================
+STEP 1: Gathering Configuration
+========================================
+[INFO] Project ID: my-project-123
+Enter cluster name: prod-cluster
+Enter cluster region/zone: us-central1-c
+Enter new-pod-scale-up-delay in seconds [600]: 600
+Enter min nodes [1]: 1
+Enter max nodes [10]: 10
+
+[INFO] Fetching available node pools...
+
+[INFO] Available node pools:
+ 1. default-pool
+ 2. gpu-pool
+ 3. batch-pool
+
+Apply changes to specific node pools only? (yes/no) [no]: yes
+Enter node pool names (comma-separated): batch-pool,gpu-pool
+[SUCCESS] ✓ Selected pools: batch-pool gpu-pool
+
+[INFO] Configuration:
+  Project:        my-project-123
+  Cluster:        prod-cluster
+  Region:         us-central1-c
+  GCP SA:         cluster-autoscaler@my-project-123.iam.gserviceaccount.com
+  K8s Namespace:  default
+  IG Prefix:      gke-prod-cluster
+  Scale-up Delay: 600s
+  Min Nodes:      1
+  Max Nodes:      10
+  Chart Version:  9.43.2
+  Target Pools:   batch-pool gpu-pool
+
+Continue? (yes/no): yes
+
+========================================
+STEP 2: Connecting to Cluster
+========================================
+[SUCCESS] ✓ Connected to cluster
+
+========================================
+STEP 3: Verifying GKE Autoscaling is Disabled
+========================================
+[INFO] Disabling autoscaling on pool: batch-pool
+[INFO] Disabling autoscaling on pool: gpu-pool
+[SUCCESS] ✓ GKE autoscaling disabled on selected pools
+
+========================================
+STEP 4: Verifying Workload Identity
+========================================
+[SUCCESS] ✓ Workload Identity enabled: my-project-123.svc.id.goog
+[SUCCESS] ✓ Node pool 'batch-pool' already has GKE_METADATA
+[SUCCESS] ✓ Node pool 'gpu-pool' already has GKE_METADATA
+
+========================================
+STEP 8: Installing Cluster Autoscaler Helm Chart
+========================================
+[INFO] Deploying cluster-autoscaler...
+[SUCCESS] ✓ Cluster autoscaler deployed
+
+========================================
+STEP 11: Verifying Deployment
+========================================
+[INFO] Pod: custom-ca-gce-cluster-autoscaler-7d9f8b5c4-xk2m9
+
+========== LOGS ==========
+I0305 10:23:45.123456       1 main.go:515] Cluster autoscaler 1.30.0
+I0305 10:23:45.234567       1 cloud_provider_builder.go:89] GCE resource limits: ...
+I0305 10:23:46.345678       1 gce_manager.go:412] Discovered MIG: gke-prod-cluster-batch-pool-a1b2c3d4
+I0305 10:23:46.456789       1 gce_manager.go:412] Discovered MIG: gke-prod-cluster-gpu-pool-e5f6g7h8
+I0305 10:23:46.567890       1 static_autoscaler.go:230] Starting main loop
+==========================
+
+[SUCCESS] ✅ Cluster Autoscaler is working!
+
+========================================
+🎉 Deployment Complete!
+========================================
+
+Custom Cluster Autoscaler Deployed:
+  ✓ GCP Service Account:   cluster-autoscaler@my-project-123.iam.gserviceaccount.com
+  ✓ K8s Service Account:   custom-ca-gce-cluster-autoscaler
+  ✓ Namespace:             default
+  ✓ Scale-up Delay:        600s
+  ✓ Min Nodes:             1
+  ✓ Max Nodes:             10
+  ✓ Instance Group:        gke-prod-cluster*
+  ✓ Target Pools:          batch-pool gpu-pool
+
+Useful Commands:
+  # Watch logs:
+  kubectl logs -f custom-ca-gce-cluster-autoscaler-7d9f8b5c4-xk2m9 -n default
+
+  # Test (pods will wait 600s before scaling):
+  kubectl run test --image=nginx --requests='cpu=10000m'
+  kubectl get pods -w
+```
 
 ## How It Works
 
-### Architecture
-
 ```
-┌─────────────────────────────────────────────┐
-│  Custom Cluster Autoscaler (in default ns) │
-│  - Watches for pending pods                 │
-│  - Waits 600s (configurable)                │
-│  - Scales GCE Instance Groups directly      │
-└─────────────────────────────────────────────┘
-                    │
-                    │ Manages
-                    ▼
-┌─────────────────────────────────────────────┐
-│  GCE Managed Instance Groups (MIGs)         │
-│  - Default pool: min 1, max 10              │
-│  - Test pool: min 0, max 10                 │
-└─────────────────────────────────────────────┘
+Custom Autoscaler Pod (default namespace)
+    ↓ watches pending pods
+    ↓ waits 600s (configurable)
+    ↓ scales GCE Instance Groups
+GCE Managed Instance Groups (node pools)
 ```
 
-### Key Differences from GKE Autoscaler
-
-| Feature | GKE Managed | Custom (This Solution) |
-|---------|-------------|------------------------|
-| Scale-up delay | ~10 seconds (fixed) | Configurable (e.g., 600s) |
-| Customization | Limited flags only | All autoscaler flags |
-| Namespace | Hidden (kube-system) | `default` (visible) |
-| Control | Google manages | You manage |
-| Updates | Automatic | Manual (via Helm) |
+**vs GKE Autoscaler:**
+- GKE: ~10s delay, limited flags, hidden in kube-system
+- Custom: Configurable delay, all flags available, visible in default namespace
 
 ## Configuration
 
-### Scale-Up Delay
+### Critical Flag: Scale-Up Delay
 
-The most important flag: `--new-pod-scale-up-delay=600s`
+```bash
+--new-pod-scale-up-delay=600s
+```
 
-**What it does:**
-- Pod becomes pending at time 0
-- Autoscaler sees it but **ignores it** for 600 seconds
-- After 600 seconds, if still pending → scales up
+Pod pending → autoscaler waits 600s → still pending? → scale up
 
-**Why use it?**
-- Give the scheduler time to rearrange existing pods
-- Avoid scaling for temporary spikes
-- Wait for spot instances to become available
-- Batch multiple pending pods before scaling
+**Use cases:**
+- Batch jobs: Wait to batch scale decisions
+- Spot instances: Wait for cheaper nodes
+- Cost optimization: Avoid rapid scaling
 
-### Other Useful Flags
+### Add More Flags
 
-You can add any flag in `deploy-custom-ca.sh`:
+Edit `deploy-custom-ca.sh` helm command:
 
 ```bash
 --set "extraArgs.scale-down-delay-after-add=10m"
@@ -131,270 +186,103 @@ You can add any flag in `deploy-custom-ca.sh`:
 --set "extraArgs.skip-nodes-with-local-storage=false"
 ```
 
-See [all flags here](https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/FAQ.md#what-are-the-parameters-to-ca)
+[All flags](https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/FAQ.md#what-are-the-parameters-to-ca)
 
-## Using Custom Node Pools
+## Node Pool Selection
 
-### Example: Test Workload Pool
+The script now supports targeting specific node pools:
 
-The `add-nodepool.sh` creates a pool with:
-- Label: `usecase=test`
-- Taint: `usecase=test:NoSchedule`
-- Min nodes: 0 (saves money!)
-- Max nodes: 10
+```bash
+Apply changes to specific node pools only? (yes/no) [no]: yes
+Enter node pool names (comma-separated): gpu-pool,batch-pool
+```
 
-**Deploy a pod to this pool:**
+Only selected pools get:
+- GKE autoscaling disabled
+- Workload metadata set to GKE_METADATA
+
+Other pools remain untouched.
+
+## Selective Node Pools Example
+
+Deploy to test workload with labels/taints:
 
 ```yaml
 apiVersion: v1
 kind: Pod
 metadata:
-  name: my-test-pod
+  name: test-pod
 spec:
   nodeSelector:
-    usecase: test          # Must match label
+    usecase: test
   tolerations:
-  - key: "usecase"
-    operator: "Equal"
-    value: "test"
-    effect: "NoSchedule"   # Must tolerate taint
+  - key: usecase
+    value: test
+    effect: NoSchedule
   containers:
   - name: app
     image: nginx
-    resources:
-      requests:
-        cpu: 100m
-        memory: 128Mi
 ```
 
-**What happens:**
-1. Pod created → stays pending for 600 seconds
-2. After 600s → autoscaler adds a node to test-pool
-3. Pod schedules on new node
-4. When pod deleted → node scales down to 0 after ~10 minutes
-
-## Extending to More Node Pools
-
-### Option 1: Run the Script Again
-
-```bash
-./add-nodepool.sh
-# Enter different pool name when prompted
-```
-
-### Option 2: Manual Helm Upgrade
-
-```bash
-# Add pool [2]
-helm upgrade custom-ca autoscaler/cluster-autoscaler \
-  --namespace=default \
-  --reuse-values \
-  --set "autoscalingGroupsnamePrefix[2].name=gke-CLUSTER-new-pool" \
-  --set "autoscalingGroupsnamePrefix[2].minSize=0" \
-  --set "autoscalingGroupsnamePrefix[2].maxSize=20"
-
-# Restart autoscaler pod
-kubectl delete pod -n default -l app.kubernetes.io/name=gce-cluster-autoscaler
-```
-
-### Option 3: Create Node Pool First
-
-```bash
-# Create the GKE node pool
-gcloud container node-pools create gpu-pool \
-  --cluster=my-cluster \
-  --region=us-central1-c \
-  --machine-type=n1-standard-4 \
-  --accelerator=type=nvidia-tesla-t4,count=1 \
-  --num-nodes=0 \
-  --node-labels=workload=gpu \
-  --node-taints=workload=gpu:NoSchedule \
-  --scopes=https://www.googleapis.com/auth/cloud-platform \
-  --workload-metadata=GKE_METADATA
-
-# Then run add-nodepool.sh to add it to autoscaler
-```
-
-## Common Use Cases
-
-### 1. Batch Jobs
-
-**Problem:** Batch jobs create 100 pods at once, scale-up is too aggressive
-
-**Solution:**
-```bash
-# Set 10-minute delay
---new-pod-scale-up-delay=600s
-```
-Autoscaler waits to batch the scale-up decision
-
-### 2. Spot/Preemptible Workloads
-
-**Problem:** Want to wait for cheap spot instances instead of scaling immediately
-
-**Solution:**
-```bash
-# Set 5-minute delay + use spot node pool
---new-pod-scale-up-delay=300s
-```
-
-### 3. Dev/Test Environments
-
-**Problem:** Need isolated node pool that scales to 0 when not used
-
-**Solution:**
-```bash
-# Create pool with min=0
-./add-nodepool.sh
-# Enter min nodes: 0
-```
-
-### 4. Cost Optimization
-
-**Problem:** Too many rapid scale-ups/downs waste money
-
-**Solution:**
-```bash
---new-pod-scale-up-delay=600s
---scale-down-unneeded-time=10m
-```
+Result: Pod pending 600s → node scales up → pod schedules → idle 10m → node scales down
 
 ## Monitoring
 
-### Check Autoscaler Status
-
 ```bash
-# Get pod name
-POD=$(kubectl get pods -n default -l app.kubernetes.io/name=gce-cluster-autoscaler -o jsonpath='{.items[0].metadata.name}')
-
 # Watch logs
+POD=$(kubectl get pods -n default -l app.kubernetes.io/name=gce-cluster-autoscaler -o jsonpath='{.items[0].metadata.name}')
 kubectl logs -f $POD -n default
 
-# Check for errors
-kubectl logs $POD -n default | grep -i error
-```
-
-### Verify Node Pools
-
-```bash
-# List all node pools
-gcloud container node-pools list --cluster=CLUSTER_NAME --region=REGION
-
-# Check instance groups
-gcloud compute instance-groups list | grep gke-
-```
-
-### Test Scaling
-
-```bash
-# Create pending pod
+# Test scaling
 kubectl run test --image=nginx --requests='cpu=10000m'
-
-# Watch (should be pending for 600s)
 kubectl get pods -w
-
-# Watch nodes being created
-watch kubectl get nodes
 ```
 
 ## Troubleshooting
 
-### Autoscaler Not Scaling
-
-**Check logs:**
+**"Error 403" in logs:**
+Wait 5 minutes for Workload Identity propagation, then restart pod:
 ```bash
-kubectl logs -n default -l app.kubernetes.io/name=gce-cluster-autoscaler --tail=100
+kubectl delete pod $POD -n default
 ```
 
-**Common issues:**
-- ❌ **"Error 403"** → Workload Identity not configured correctly
-- ❌ **"Cannot find instance group"** → Wrong instance group prefix
-- ❌ **Pod pending forever** → Check node selector/tolerations
+**Nodes not scaling down:**
+Check for:
+- Pods with `safe-to-evict: "false"` annotation
+- Local storage
+- PodDisruptionBudgets
+- System pods
 
-### Authentication Errors
-
-```bash
-# Verify Workload Identity binding
-gcloud iam service-accounts get-iam-policy \
-  cluster-autoscaler@PROJECT_ID.iam.gserviceaccount.com
-
-# Should show: serviceAccount:PROJECT_ID.svc.id.goog[default/SERVICE_ACCOUNT]
-```
-
-### Nodes Not Scaling Down
-
-**Common reasons:**
-- Pod has `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` annotation
-- Pod has local storage
-- PodDisruptionBudget prevents eviction
-- Node has system pods
-
-**Check:**
-```bash
-kubectl describe node NODE_NAME
-```
+**Wrong instance group:**
+Verify IG prefix matches: `gke-{CLUSTER_NAME}-*`
 
 ## Cleanup
 
-### Remove Test Deployment
 ```bash
-kubectl delete deployment test-workload
-```
-
-### Remove Node Pool
-```bash
-gcloud container node-pools delete test-pool \
-  --cluster=CLUSTER_NAME \
-  --region=REGION
-```
-
-### Remove Autoscaler (back to GKE managed)
-```bash
-# Delete custom autoscaler
+# Remove autoscaler
 helm uninstall custom-ca -n default
 
 # Re-enable GKE autoscaling
 gcloud container clusters update CLUSTER_NAME \
   --enable-autoscaling \
   --node-pool=POOL_NAME \
-  --min-nodes=1 \
-  --max-nodes=10 \
+  --min-nodes=1 --max-nodes=10 \
   --region=REGION
 ```
 
-## Important Notes
+## Important
 
-### Security
-- ✅ Uses Workload Identity (no service account keys!)
-- ✅ Follows principle of least privilege
-- ✅ All resources visible via `kubectl`
+- **You manage updates** - No automatic upgrades like GKE
+- **Manual Helm upgrades** - Check for autoscaler breaking changes
+- **Test first** - Don't experiment in production
+- **Monitor logs** - Catch issues early
 
-### Limitations
-- ⚠️ **You manage updates** - Not automatic like GKE
-- ⚠️ **Manual Helm upgrades** needed for new versions
-- ⚠️ **Breaking changes** possible with autoscaler updates
+## Architecture
 
-### Best Practices
-- 📝 **Document your configuration** - Save Helm values
-- 🔄 **Test in dev first** - Don't experiment in production
-- 📊 **Monitor logs** - Watch for errors after deployment
-- 💰 **Use min=0 for test pools** - Save costs
+See the Mermaid diagram in the repository for component relationships.
 
-## Reference
+## References
 
 - [Original guide](https://vadasambar.com/post/kubernetes/how-to-deploy-custom-ca-on-gcp/)
 - [Cluster Autoscaler FAQ](https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/FAQ.md)
-- [All available flags](https://github.com/kubernetes/autoscaler/blob/master/cluster-autoscaler/FAQ.md#what-are-the-parameters-to-ca)
-- [Helm chart docs](https://github.com/kubernetes/autoscaler/tree/master/charts/cluster-autoscaler)
-
-## Support
-
-**Found a bug?** Check the logs first, then review the troubleshooting section.
-
-**Need help?** The scripts have extensive logging - read the output carefully.
-
-**Want to contribute?** Improve the scripts and share them!
-
----
-
-**Made with ❤️ for engineers who need more control over GKE autoscaling**
+- [Helm chart](https://github.com/kubernetes/autoscaler/tree/master/charts/cluster-autoscaler)
