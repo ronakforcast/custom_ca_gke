@@ -78,6 +78,49 @@ MAX_NODES=${MAX_NODES:-10}
 # For K8s 1.33, use appropriate Helm chart version
 CHART_VERSION="9.43.2"  # Supports K8s 1.33
 
+# ==============================================================================
+# NODE POOL SELECTION
+# ==============================================================================
+log_info "Fetching available node pools..."
+ALL_POOLS=$(gcloud container node-pools list --cluster=$CLUSTER_NAME --region=$REGION --format="value(name)" 2>/dev/null)
+
+if [ -z "$ALL_POOLS" ]; then
+    error_exit "Cannot fetch node pools. Check cluster name and region."
+fi
+
+echo ""
+log_info "Available node pools:"
+echo "$ALL_POOLS" | nl -w2 -s'. '
+echo ""
+
+read -p "Apply changes to specific node pools only? (yes/no) [no]: " TARGET_SPECIFIC
+TARGET_SPECIFIC=${TARGET_SPECIFIC:-no}
+
+if [ "$TARGET_SPECIFIC" = "yes" ]; then
+    read -p "Enter node pool names (comma-separated): " POOL_INPUT
+    
+    # Parse comma-separated input into array
+    IFS=',' read -ra TARGET_POOLS <<< "$POOL_INPUT"
+    
+    # Trim whitespace from each element
+    for i in "${!TARGET_POOLS[@]}"; do
+        TARGET_POOLS[$i]=$(echo "${TARGET_POOLS[$i]}" | xargs)
+    done
+    
+    # Validate pools exist
+    for POOL in "${TARGET_POOLS[@]}"; do
+        if ! echo "$ALL_POOLS" | grep -q "^${POOL}$"; then
+            error_exit "Node pool '${POOL}' not found in cluster"
+        fi
+    done
+    
+    log_success "✓ Selected pools: ${TARGET_POOLS[@]}"
+else
+    # Use all pools
+    readarray -t TARGET_POOLS <<< "$ALL_POOLS"
+    log_success "✓ Will apply to all pools: ${TARGET_POOLS[@]}"
+fi
+
 log_info "Configuration:"
 cat <<EOF
   Project:        $PROJECT_ID
@@ -90,6 +133,7 @@ cat <<EOF
   Min Nodes:      $MIN_NODES
   Max Nodes:      $MAX_NODES
   Chart Version:  $CHART_VERSION
+  Target Pools:   ${TARGET_POOLS[@]}
 EOF
 
 read -p "Continue? (yes/no): " CONFIRM
@@ -122,19 +166,16 @@ echo "$AUTOSCALING_CHECK"
 
 if echo "$AUTOSCALING_CHECK" | grep -q "enabled: true"; then
     log_error "GKE autoscaling is ENABLED!"
-    log_warning "You must disable it first"
+    log_warning "Disabling on selected pools only..."
     
-    # Get node pools
-    NODE_POOLS=$(gcloud container node-pools list --cluster=$CLUSTER_NAME --region=$REGION --format="value(name)")
-    
-    for POOL in $NODE_POOLS; do
+    for POOL in "${TARGET_POOLS[@]}"; do
         log_info "Disabling autoscaling on pool: $POOL"
         gcloud container clusters update $CLUSTER_NAME \
             --no-enable-autoscaling \
             --node-pool=$POOL \
             --region=$REGION
     done
-    log_success "✓ GKE autoscaling disabled"
+    log_success "✓ GKE autoscaling disabled on selected pools"
 else
     log_success "✓ GKE autoscaling is disabled"
 fi
@@ -160,9 +201,8 @@ else
     log_success "✓ Workload Identity enabled: $WI_POOL"
 fi
 
-# Verify node pools have correct workload metadata
-NODE_POOLS=$(gcloud container node-pools list --cluster=$CLUSTER_NAME --region=$REGION --format="value(name)")
-for POOL in $NODE_POOLS; do
+# Verify node pools have correct workload metadata (only selected pools)
+for POOL in "${TARGET_POOLS[@]}"; do
     WL_METADATA=$(gcloud container node-pools describe $POOL \
         --cluster=$CLUSTER_NAME \
         --region=$REGION \
@@ -176,6 +216,8 @@ for POOL in $NODE_POOLS; do
             --region=$REGION \
             --workload-metadata=GKE_METADATA
         log_success "✓ Node pool updated"
+    else
+        log_success "✓ Node pool '$POOL' already has GKE_METADATA"
     fi
 done
 
@@ -389,6 +431,7 @@ ${GREEN}Custom Cluster Autoscaler Deployed:${NC}
   ✓ Min Nodes:             $MIN_NODES
   ✓ Max Nodes:             $MAX_NODES
   ✓ Instance Group:        $IG_PREFIX*
+  ✓ Target Pools:          ${TARGET_POOLS[@]}
 
 ${BLUE}Useful Commands:${NC}
   # Watch logs:
