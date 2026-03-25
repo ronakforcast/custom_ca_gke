@@ -303,15 +303,18 @@ else
     HELM_CMD="install"
 fi
 
-log_info "Deploying cluster-autoscaler..."
-log_info "Building instance group flags from TARGET_POOLS..."
+log_info "Collecting full instance group URLs from TARGET_POOLS..."
 
-# Build autoscalingGroupsnamePrefix flags from TARGET_POOLS
-IG_FLAGS=""
+# Build exact --nodes=min:max:fullURL entries per pool per zone
+# Uses full instanceGroups URLs (not namePrefix) to correctly handle:
+#   - pools with 0 nodes
+#   - multiple pools sharing the same prefix
+#   - PV zone affinity evaluation per zone
+NODES_ARGS=()
 VALID_IDX=0
 
 for POOL in "${TARGET_POOLS[@]}"; do
-    # Get IG URLs directly from node pool descriptor (works even with 0 nodes)
+    # Get full IG URLs directly from node pool (works even with 0 nodes)
     IG_URLS=$(gcloud container node-pools describe $POOL \
         --cluster=$CLUSTER_NAME \
         --region=$REGION \
@@ -322,20 +325,14 @@ for POOL in "${TARGET_POOLS[@]}"; do
         continue
     fi
 
-    # gcloud value() separates list items with semicolons for regional clusters (one IG per zone)
+    # gcloud value() separates list items with semicolons for regional clusters
     IFS=';' read -ra IG_URL_LIST <<< "$IG_URLS"
 
     for IG_URL in "${IG_URL_LIST[@]}"; do
-        IG_NAME=$(basename "$IG_URL")
-
-        # Strip the trailing hash+grp suffix: gke-cluster-pool-a1b2c3d4-grp → gke-cluster-pool
-        IG_POOL_PREFIX=$(echo "$IG_NAME" | sed 's/-[a-z0-9]\{8\}-grp$//')
-
-        log_info "Pool: $POOL → IG: $IG_NAME → prefix: $IG_POOL_PREFIX"
-
-        IG_FLAGS+=" --set autoscalingGroupsnamePrefix[${VALID_IDX}].name=${IG_POOL_PREFIX}"
-        IG_FLAGS+=" --set autoscalingGroupsnamePrefix[${VALID_IDX}].minSize=${MIN_NODES}"
-        IG_FLAGS+=" --set autoscalingGroupsnamePrefix[${VALID_IDX}].maxSize=${MAX_NODES}"
+        # Replace instanceGroupManagers with instanceGroups (required by autoscaler)
+        IG_URL_CLEAN=$(echo "$IG_URL" | sed 's|instanceGroupManagers|instanceGroups|g')
+        log_info "Pool: $POOL → $IG_URL_CLEAN"
+        NODES_ARGS+=("${MIN_NODES}:${MAX_NODES}:${IG_URL_CLEAN}")
         VALID_IDX=$((VALID_IDX + 1))
     done
 done
@@ -346,13 +343,15 @@ fi
 
 log_info "Configuration:"
 echo "  - Target Pools:     ${TARGET_POOLS[@]}"
+echo "  - Node Groups:      $VALID_IDX"
 echo "  - Min Nodes:        $MIN_NODES"
 echo "  - Max Nodes:        $MAX_NODES"
 echo "  - Scale-up Delay:   ${SCALE_UP_DELAY}s"
 echo "  - Chart Version:    $CHART_VERSION"
 
+# Install helm chart without node group config (helm doesn't support repeated --nodes args cleanly)
+# Node groups are injected via kubectl patch immediately after
 helm $HELM_CMD $HELM_RELEASE_NAME autoscaler/cluster-autoscaler \
-    $IG_FLAGS \
     --set autoDiscovery.clusterName=${CLUSTER_NAME} \
     --set "rbac.serviceAccount.annotations.iam\.gke\.io\/gcp-service-account=${GCP_SA_EMAIL}" \
     --set cloudProvider=gce \
@@ -363,7 +362,23 @@ helm $HELM_CMD $HELM_RELEASE_NAME autoscaler/cluster-autoscaler \
     --namespace=$K8S_NAMESPACE \
     --version=$CHART_VERSION
 
-log_success "✓ Cluster autoscaler deployed"
+log_success "✓ Helm chart deployed"
+
+# Build the exact command array with --nodes per pool per zone and inject via patch
+log_info "Patching deployment with exact --nodes entries per pool/zone..."
+
+CMD_JSON='["./cluster-autoscaler","--cloud-provider=gce","--namespace='"$K8S_NAMESPACE"'"'
+for NODES_ENTRY in "${NODES_ARGS[@]}"; do
+    CMD_JSON+=',"--nodes='"$NODES_ENTRY"'"'
+done
+CMD_JSON+=',"--logtostderr=true","--new-pod-scale-up-delay='"${SCALE_UP_DELAY}"'s","--stderrthreshold=info","--v=4"]'
+
+kubectl patch deployment ${HELM_RELEASE_NAME}-gce-cluster-autoscaler \
+    -n $K8S_NAMESPACE \
+    --type=json \
+    -p='[{"op":"replace","path":"/spec/template/spec/containers/0/command","value":'"$CMD_JSON"'}]'
+
+log_success "✓ Cluster autoscaler deployed with $VALID_IDX node groups"
 
 # ==============================================================================
 # STEP 9: Create Workload Identity Binding
