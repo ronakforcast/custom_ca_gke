@@ -311,24 +311,31 @@ IG_FLAGS=""
 VALID_IDX=0
 
 for POOL in "${TARGET_POOLS[@]}"; do
-    IG_NAME=$(gcloud compute instance-groups list \
-        --filter="name~gke-${CLUSTER_NAME}-${POOL}" \
-        --format="value(name)" | head -1)
+    # Get IG URLs directly from node pool descriptor (works even with 0 nodes)
+    IG_URLS=$(gcloud container node-pools describe $POOL \
+        --cluster=$CLUSTER_NAME \
+        --region=$REGION \
+        --format="value(instanceGroupUrls)")
 
-    if [ -z "$IG_NAME" ]; then
-        log_warning "Could not find instance group for pool: $POOL, skipping"
+    if [ -z "$IG_URLS" ]; then
+        log_warning "No instance group URLs found for pool: $POOL, skipping"
         continue
     fi
 
-    # Strip the trailing node-specific suffix
-    IG_POOL_PREFIX=$(echo "$IG_NAME" | sed 's/-[a-z0-9]\{8\}-[a-z0-9]\{4\}$//')
+    # Loop over each zone's IG (regional clusters have one IG per zone)
+    while IFS= read -r IG_URL; do
+        IG_NAME=$(basename "$IG_URL")
 
-    log_info "Pool: $POOL → IG prefix: $IG_POOL_PREFIX"
+        # Strip the trailing hash+grp suffix: gke-cluster-pool-a1b2c3d4-grp → gke-cluster-pool
+        IG_POOL_PREFIX=$(echo "$IG_NAME" | sed 's/-[a-z0-9]\{8\}-grp$//')
 
-    IG_FLAGS+=" --set autoscalingGroupsnamePrefix[${VALID_IDX}].name=${IG_POOL_PREFIX}"
-    IG_FLAGS+=" --set autoscalingGroupsnamePrefix[${VALID_IDX}].minSize=${MIN_NODES}"
-    IG_FLAGS+=" --set autoscalingGroupsnamePrefix[${VALID_IDX}].maxSize=${MAX_NODES}"
-    VALID_IDX=$((VALID_IDX + 1))
+        log_info "Pool: $POOL → IG: $IG_NAME → prefix: $IG_POOL_PREFIX"
+
+        IG_FLAGS+=" --set autoscalingGroupsnamePrefix[${VALID_IDX}].name=${IG_POOL_PREFIX}"
+        IG_FLAGS+=" --set autoscalingGroupsnamePrefix[${VALID_IDX}].minSize=${MIN_NODES}"
+        IG_FLAGS+=" --set autoscalingGroupsnamePrefix[${VALID_IDX}].maxSize=${MAX_NODES}"
+        VALID_IDX=$((VALID_IDX + 1))
+    done <<< "$IG_URLS"
 done
 
 if [ $VALID_IDX -eq 0 ]; then
