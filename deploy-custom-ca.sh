@@ -322,8 +322,10 @@ for POOL in "${TARGET_POOLS[@]}"; do
         continue
     fi
 
-    # Loop over each zone's IG (regional clusters have one IG per zone)
-    while IFS= read -r IG_URL; do
+    # gcloud value() separates list items with semicolons for regional clusters (one IG per zone)
+    IFS=';' read -ra IG_URL_LIST <<< "$IG_URLS"
+
+    for IG_URL in "${IG_URL_LIST[@]}"; do
         IG_NAME=$(basename "$IG_URL")
 
         # Strip the trailing hash+grp suffix: gke-cluster-pool-a1b2c3d4-grp → gke-cluster-pool
@@ -335,7 +337,7 @@ for POOL in "${TARGET_POOLS[@]}"; do
         IG_FLAGS+=" --set autoscalingGroupsnamePrefix[${VALID_IDX}].minSize=${MIN_NODES}"
         IG_FLAGS+=" --set autoscalingGroupsnamePrefix[${VALID_IDX}].maxSize=${MAX_NODES}"
         VALID_IDX=$((VALID_IDX + 1))
-    done <<< "$IG_URLS"
+    done
 done
 
 if [ $VALID_IDX -eq 0 ]; then
