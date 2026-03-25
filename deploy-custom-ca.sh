@@ -304,17 +304,46 @@ else
 fi
 
 log_info "Deploying cluster-autoscaler..."
+log_info "Building instance group flags from TARGET_POOLS..."
+
+# Build autoscalingGroupsnamePrefix flags from TARGET_POOLS
+IG_FLAGS=""
+VALID_IDX=0
+
+for POOL in "${TARGET_POOLS[@]}"; do
+    IG_NAME=$(gcloud compute instance-groups list \
+        --filter="name~gke-${CLUSTER_NAME}-${POOL}" \
+        --format="value(name)" | head -1)
+
+    if [ -z "$IG_NAME" ]; then
+        log_warning "Could not find instance group for pool: $POOL, skipping"
+        continue
+    fi
+
+    # Strip the trailing node-specific suffix
+    IG_POOL_PREFIX=$(echo "$IG_NAME" | sed 's/-[a-z0-9]\{8\}-[a-z0-9]\{4\}$//')
+
+    log_info "Pool: $POOL → IG prefix: $IG_POOL_PREFIX"
+
+    IG_FLAGS+=" --set autoscalingGroupsnamePrefix[${VALID_IDX}].name=${IG_POOL_PREFIX}"
+    IG_FLAGS+=" --set autoscalingGroupsnamePrefix[${VALID_IDX}].minSize=${MIN_NODES}"
+    IG_FLAGS+=" --set autoscalingGroupsnamePrefix[${VALID_IDX}].maxSize=${MAX_NODES}"
+    VALID_IDX=$((VALID_IDX + 1))
+done
+
+if [ $VALID_IDX -eq 0 ]; then
+    error_exit "No valid instance groups found for selected pools"
+fi
+
 log_info "Configuration:"
-echo "  - Instance Group Prefix: $IG_PREFIX"
-echo "  - Min Nodes: $MIN_NODES"
-echo "  - Max Nodes: $MAX_NODES"
-echo "  - Scale-up Delay: ${SCALE_UP_DELAY}s"
-echo "  - Chart Version: $CHART_VERSION"
+echo "  - Target Pools:     ${TARGET_POOLS[@]}"
+echo "  - Min Nodes:        $MIN_NODES"
+echo "  - Max Nodes:        $MAX_NODES"
+echo "  - Scale-up Delay:   ${SCALE_UP_DELAY}s"
+echo "  - Chart Version:    $CHART_VERSION"
 
 helm $HELM_CMD $HELM_RELEASE_NAME autoscaler/cluster-autoscaler \
-    --set "autoscalingGroupsnamePrefix[0].name=${IG_PREFIX}" \
-    --set "autoscalingGroupsnamePrefix[0].maxSize=${MAX_NODES}" \
-    --set "autoscalingGroupsnamePrefix[0].minSize=${MIN_NODES}" \
+    $IG_FLAGS \
     --set autoDiscovery.clusterName=${CLUSTER_NAME} \
     --set "rbac.serviceAccount.annotations.iam\.gke\.io\/gcp-service-account=${GCP_SA_EMAIL}" \
     --set cloudProvider=gce \
@@ -430,7 +459,6 @@ ${GREEN}Custom Cluster Autoscaler Deployed:${NC}
   ✓ Scale-up Delay:        ${SCALE_UP_DELAY}s
   ✓ Min Nodes:             $MIN_NODES
   ✓ Max Nodes:             $MAX_NODES
-  ✓ Instance Group:        $IG_PREFIX*
   ✓ Target Pools:          ${TARGET_POOLS[@]}
 
 ${BLUE}Useful Commands:${NC}
